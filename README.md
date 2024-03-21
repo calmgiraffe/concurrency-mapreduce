@@ -245,3 +245,6 @@ void MR_Mapper_Cleanup() {
 ```
 
 ## Results
+
+`../mapreduce -r 1 -m 1 $(ls)` : 12.17 seconds
+`../mapreduce -r 5 -m 2 $(ls)` : 4.30 seconds
