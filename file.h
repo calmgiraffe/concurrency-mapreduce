@@ -4,6 +4,8 @@
 #include <stdint.h>
 #include <unistd.h>
 
+#define BUF_SIZE 4096
+
 int64_t get_size(char * filename);
 int get_word(char *buffer, int buffer_size, FILE *f);
 int get_char(char *ch, FILE *f);

@@ -207,9 +207,9 @@ void MR_Run(int argc, char *argv[],
 #endif
     int i;
     num_files = argc - optint_cpy;
-    atomic_init(&pairs_index, 0);
-    atomic_init(&partition_index, 0);
-    atomic_init(&global_mthread_id, 0);
+    atomic_init(&pairs_index, 0); // used by mapper proc to index file array
+    atomic_init(&partition_index, 0); // used for assigning reducer a partition
+    atomic_init(&global_mthread_id, 0); // used for debugging
 
     // Generate the array of (filename, size) objects.
     files = (FileInfo *) malloc(sizeof(FileInfo) * num_files);
@@ -240,8 +240,6 @@ void MR_Run(int argc, char *argv[],
         exit(EXIT_FAILURE);
     }
     for (i = 0; i < num_mappers; i++) {
-        // Can't know in advance which threads will finish first. Therefore,
-        // create thread in detached mode.
         if (pthread_create(&mthreads[i], NULL, mapper_proc, (void*) Map) != 0) {
             perror("Failed to create mthread");
         }

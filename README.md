@@ -1,264 +1,247 @@
-
 # MapReduce
 
-A simplified version of MapReduce for just a single machine, currently only 
-suitable for tokenizing a text file into its individual words, although this can
-be changed by reimplementing the Map() and Reduce() functions. Pointers to 
-these two functions are passed into MR_Run(), which is the main routine, thereby
-making the program modular, where function can be changed by passing in pointers
-to new functions. MR_Run() also takes arguments for the number of mapper and
-reducer threads, as well as a pointer to a hash function, which determines which
-reducer a (key, val) pair should be sent to.
+A simplified version of MapReduce for just a single machine. It currently
+tokenizes a text file into its individual words, although this can be changed by
+reimplementing the `Map()` and `Reduce()` functions. Pointers to these two functions
+are passed into `MR_Run()`, which is the main routine, making the program modular.
+Custom functions can be passed into MR_Run() to achieve the desired Map and
+Reduce behavior. MR_Run() also takes arguments for the number of mapper and
+reducer threads, as well as a pointer to a hash function-- of which, the latter
+determines which reducer thread the output of the Map() function should be sent to.
 
 The specific objectives of this assignment were as follows:
 
-- To learn about the MapReduce paradigm.
+- To learn about the MapReduce model.
 - To implement a correct and efficient MapReduce framework using threads and
   related functions.
-- To gain experience writing efficient concurrent code that efficiently solves
-  problems like the producers/consumers problem, taking into account disk I/O,
-  an optimal algorithmic approach, and more.
+- To gain experience with writing concurrent code that efficiently solves common
+  problems like producers/consumers, taking into account disk I/O, an optimal
+  algorithmic approach, and more.
 - To gain experience with lockless data structures, as demonstrated by the
   lockless BST.
 
+## Architecture of framework.c
 
-// TODO
+### main()
 
-## General Idea
+As with all programs, execution begins from `main()`. The default number of mapper
+and reducer threads is set to 5 and 5 respectively, but custom values can be set
+with the `[-m mappers]` and `[-r reducers]` flags. The list of files to process
+is a required argument. For example, a run with 4 mappers and 2 reducers might
+look like `./mapreduce -m 4 -r 2 a.txt b.txt c.txt`.
 
-Let's now get into the exact code you'll have to build. The MapReduce
-infrastructure you will build supports the execution of user-defined `Map()`
-and `Reduce()` functions.
-
-As from the original paper: "`Map()`, written by the user, takes an input pair
-and produces a set of intermediate key/value pairs. The MapReduce library
-groups together all intermediate values associated with the same intermediate
-key K and passes them to the `Reduce()` function."
-
-"The `Reduce()` function, also written by the user, accepts an intermediate
-key K and a set of values for that key. It merges together these values to
-form a possibly smaller set of values; typically just zero or one output value
-is produced per `Reduce()` invocation. The intermediate values are supplied to
-the user's reduce function via an iterator."
-
-A classic example, written here in pseudocode, shows how to count the number
-of occurrences of each word in a set of documents:
+`main()` initializes program variables then calls the below function:
 
 ```
-map(String key, String value):
-    // key: document name
-    // value: document contents
-    for each word w in value:
-        EmitIntermediate(w, "1");
-
-reduce(String key, Iterator values):
-    // key: a word
-    // values: a list of counts
-    int result = 0;
-    for each v in values:
-        result += ParseInt(v);
-    print key, result;
+MR_Run(argc, argv, Map, num_mappers, Reduce, num_reducers, MR_DefaultHashPartition);
 ```
 
-What's fascinating about MapReduce is that so many different kinds of relevant
-computations can be mapped onto this framework. The original paper lists many
-examples, including word counting (as above), a distributed grep, a URL
-frequency access counters, a reverse web-link graph application, a term-vector
-per host analysis, and others. 
-
-What's also quite interesting is how easy it is to parallelize: many mappers
-can be running at the same time, and later, many reducers can be running at
-the same time. Users don't have to worry about how to parallelize their
-application; rather, they just write `Map()` and `Reduce()` functions and the
-infrastructure does the rest.
-
-## Code Overview
-
-We give you here the
-[`mapreduce.h`](https://github.com/remzi-arpacidusseau/ostep-projects/tree/master/concurrency-mapreduce/mapreduce.h)
-header file that specifies exactly what you must build in your MapReduce library:
+Here, `Map`, `Reduce`, and `MR_DefaultHashPartition` are pointers to functions.
+The functions need to return and accept specific arguments as defined below:
 
 ```
-#ifndef __mapreduce_h__
-#define __mapreduce_h__
-
-// Different function pointer types used by MR
-typedef char *(*Getter)(char *key, int partition_number);
+// From framework.c
 typedef void (*Mapper)(char *file_name);
-typedef void (*Reducer)(char *key, Getter get_func, int partition_number);
+typedef void (*Reducer)(int partition_number);
+
+// From partition.c
 typedef unsigned long (*Partitioner)(char *key, int num_partitions);
-
-// External functions: these are what you must define
-void MR_Emit(char *key, char *value);
-
-unsigned long MR_DefaultHashPartition(char *key, int num_partitions);
-
-void MR_Run(int argc, char *argv[], 
-	    Mapper map, int num_mappers, 
-	    Reducer reduce, int num_reducers, 
-	    Partitioner partition);
-
-#endif // __mapreduce_h__
 ```
 
-The most important function is `MR_Run`, which takes the command line
-parameters of a given program, a pointer to a Map function (type `Mapper`,
-called `map`), the number of mapper threads your library should create
-(`num_mappers`), a pointer to a Reduce function (type `Reducer`, called
-`reduce`), the number of reducers (`num_reducers`), and finally, a pointer to
-a Partition function (`partition`, described below).
+The function calls `MR_Run()` which is the main routine of the MapReduce framework.
 
-Thus, when a user is writing a MapReduce computation with your library, they
-will implement a Map function, implement a Reduce function, possibly implement
-a Partition function, and then call `MR_Run()`. The infrastructure will then
-create threads as appropriate and run the computation.
+### MR_Run()
 
-One basic assumption is that the library will create `num_mappers` threads
-(in a thread pool) that perform the map tasks. Another is that your library 
-will create `num_reducers` threads to perform the reduction tasks. Finally,
-your library will create some kind of internal data structure to pass
-keys and values from mappers to reducers; more on this below.
+The list of given input files is sorted in descending
+size order so that the largest files are processed by the Mapper threads first.
+This allows for an even distribution of workload so that when the program
+eventually gets to the last files to be processed, a scenario where the program
+is waiting for a single thread to finish processing a large file is unlikely to
+arise. The built-in `qsort()` function gives a flexible and efficient way to
+sort.
 
-## Simple Example: Wordcount
-
-Here is a simple (but functional) wordcount program, written to use this
-infrastructure: 
+`MR_InitPartition()` sets up an array of bounded buffers. An array of num_p
+struct boundedbuffer_t is made, one for each reducer thread, where each entry
+has a `buffer` member that points to the actual buffer holding the data.
 
 ```
-#include <assert.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include "mapreduce.h"
+typedef struct boundedbuffer_t {
+    sem_t full;
+    sem_t empty;
+    sem_t mutex;
+    KeyValue *buffer;
+    int fill;   // ptr for producer
+    int use;    // ptr for consumer
+} BoundedBuffer;
+```
 
-void Map(char *file_name) {
-    FILE *fp = fopen(file_name, "r");
-    assert(fp != NULL);
+After this data structure is made, the mapper and reducer threads are created
+(forked) from the main thread. These threads will start their respective routines
+and start doing work. Mapper and Reducer threads are carefully synchronized to
+ensure correctness; this is explained in more detail later on.
 
-    char *line = NULL;
-    size_t size = 0;
-    while (getline(&line, &size, fp) != -1) {
-        char *token, *dummy = line;
-        while ((token = strsep(&dummy, " \t\n\r")) != NULL) {
-            MR_Emit(token, "1");
-        }
+```
+for (i = 0; i < num_mappers; i++) {
+    if (pthread_create(&mthreads[i], NULL, mapper_proc, (void*) Map) != 0) {
+        perror("Failed to create mthread");
     }
-    free(line);
-    fclose(fp);
 }
-
-void Reduce(char *key, Getter get_next, int partition_number) {
-    int count = 0;
-    char *value;
-    while ((value = get_next(key, partition_number)) != NULL)
-        count++;
-    printf("%s %d\n", key, count);
-}
-
-int main(int argc, char *argv[]) {
-    MR_Run(argc, argv, Map, 10, Reduce, 10, MR_DefaultHashPartition);
+for (i = 0; i < num_reducers; i++) {
+    if (pthread_create(&rthreads[i], NULL, reducer_proc, (void*) Reduce) != 0) {
+        perror("Failed to create rthread");
+    }
 }
 ```
 
-Let's walk through this code, in order to see what it is doing. First, notice
-that `Map()` is called with a file name. In general, we assume that this type
-of computation is being run over many files; each invocation of `Map()` is
-thus handed one file name and is expected to process that file in its
-entirety. 
+### mapper_proc() and reducer_proc()
 
-In this example, the code above just reads through the file, one line at a
-time, and uses `strsep()` to chop the line into tokens. Each token is then
-emitted using the `MR_Emit()` function, which takes two strings as input: a
-key and a value. The key here is the word itself, and the token is just a
-count, in this case, 1 (as a string). It then closes the file.
-
-The `MR_Emit()` function is thus another key part of your library; it needs to
-take key/value pairs from the many different mappers and store them in a way 
-that later reducers can access them, given constraints described
-below. Designing and implementing this data structure is thus a central
-challenge of the project.
-
-After the mappers are finished, your library should have stored the key/value
-pairs in such a way that the `Reduce()` function can be called. `Reduce()` is
-invoked once per key, and is passed the key along with a function that enables
-iteration over all of the values that produced that same key. To iterate, the
-code just calls `get_next()` repeatedly until a NULL value is returned;
-`get_next` returns a pointer to the value passed in by the `MR_Emit()`
-function above, or NULL when the key's values have been processed. The output,
-in the example, is just a count of how many times a given word has appeared,
-and is just printed to standard output.
-
-All of this computation is started off by a call to `MR_Run()` in the `main()`
-routine of the user program. This function is passed the `argv` array, and
-assumes that `argv[1]` ... `argv[n-1]` (with `argc` equal to `n`) all contain
-file names that will be passed to the mappers.
-
-One interesting function that you also need to pass to `MR_Run()` is the
-partitioning function. In most cases, programs will use the default function
-(`MR_DefaultHashPartition`), which should be implemented by your code. Here is
-its implementation:
+In `mapper_proc`, each mapper thread atomically fetches and increments `pairs_index`,
+then uses the fetched value to index into the files array and process the pointed-to
+file. The use of atomic variables guarantees that a file will only be selected once,
+and as a plus, is lock-free. A similar approach is used for `reducer_proc` to assign
+each reducer a unique partition.
 
 ```
-unsigned long MR_DefaultHashPartition(char *key, int num_partitions) {
-    unsigned long hash = 5381;
-    int c;
-    while ((c = *key++) != '\0')
-        hash = hash * 33 + c;
-    return hash % num_partitions;
+void *mapper_proc(void *arg) {
+    int i, array_len = num_files;
+    Mapper map = (Mapper) arg;
+
+    while ((i = atomic_fetch_add(&pairs_index, 1)) < array_len) {
+        // i.e., Map(char *filename)
+        // Parses specified file and generates intermediate (key,val)
+        map(files[i].filename);
+    }
+    return NULL;
+}
+
+void *reducer_proc(void *arg) {
+    Reducer reduce = (Reducer) arg;
+    int partition_index_local = atomic_fetch_add(&partition_index, 1);
+
+    // rthread accumulates (key,val)'s which were assigned to it
+    reduce(partition_index_local);
+
+    return NULL;
 }
 ```
 
-The function's role is to take a given `key` and map it to a number, from `0`
-to `num_partitions - 1`. Its use is internal to the MapReduce library, but
-critical. Specifically, your MR library should use this function to decide
-which partition (and hence, which reducer thread) gets a particular key/list
-of values to process.  For some applications, which reducer thread processes a
-particular key is not important (and thus the default function above should be
-passed in to `MR_Run()`); for others, it is, and this is why the user can pass
-in their own partitioning function as need be.
+### Map() and Reduce()
 
-One last requirement: For each partition, keys (and the value list associated
-with said keys) should be **sorted** in ascending key order; thus, when a
-particular reducer thread (and its associated partition) are working, the
-`Reduce()` function should be called on each key in order for that partition.
+These are the custom functions that can be passed in from `main()`. In the code,
+an example of a word count implementation is given.
 
-## Considerations
+`Map()` relies on the functions provided by file.c to parse the contents of the
+specified text file. Here, the main function to note is `get_word()`, which
+returns the next word in the file. The word is converted to lowercase and passed
+to a partition via `MR_Emit()`. The determination of partition number (i.e.,
+hashing) happens within MR_Emit().
 
-Here are a few things to consider in your implementation:
+```
+void Map(char *file_name) {
+    // ...
 
-- **Thread Management**. This part is fairly straightforward. You should
-    create `num_mappers` mapping threads, and assign a file to each `Map()`
-    invocation in some manner you think is best (e.g., Round Robin,
-    Shortest-File-First, etc.). Which way might lead to best performance?  You
-    should also create `num_reducers` reducer threads at some point, to work
-    on the map'd output.
+    while (1) {
+        // Loop through all the words of FILE f and place next word in buffer
+        ret = get_word(buffer, MAXWORD, f);
+        if (ret == -1) {
+            log_error("Mapper get_word() returned error");
+            log_error(file_name);
+            break; // Just move on to next file
+        }
+        else if (ret == 0) break; // no more words to get
 
-- **Partitioning and Sorting**. Your central data structure should be
-    concurrent, allowing mappers to each put values into different
-    partitions correctly and efficiently. Once the mappers have completed, a
-    sorting phase should order the key/value-lists. Then, finally, each
-    reducer thread should start calling the user-defined `Reduce()` function
-    on the keys in sorted order per partition. You should think about what
-    type of locking is needed throughout this process for correctness.
+        // Send key, value to partition
+        toLowerCase(buffer);
+        MR_Emit(buffer, value);
+    }
+    // ...
+}
+```
 
-- **Memory Management**. One last concern is memory management. The
-    `MR_Emit()` function is passed a key/value pair; it is the responsibility
-    of the MR library to make copies of each of these. Then, when the entire
-    mapping and reduction is complete, it is the responsibility of the MR
-    library to free everything.
+The opposite function that is paired with `MR_Emit()` is found within `Reduce()`
+and is named `MR_Get()`. Reduce() continuously calls MR_Get() until MR_Get()
+returns 1, at which point the while-loop terminates. Each valid entry retrieved
+from MR_Get() is made into a node for a BST, and is inserted into this BST to
+be sorted.
 
-## Grading
+```
+void Reduce(int partition_number) {
+    char *key;
+    char *key_cpy, *val_cpy;
+    Node *newnode;
 
-Your code should turn in `mapreduce.c` which implements the above functions
-correctly and efficiently. It will be compiled with test applications with the
-`-Wall -Werror -pthread -O` flags; it will also be valgrinded to check for
-memory errors.
+    while (1) {
+        // Get the next pair from the partition
+        if (MR_Get(partition_number, &key_cpy, &val_cpy) == 1) 
+            break;
 
-Your code will first be measured for correctness, ensuring that it performs
-the maps and reductions correctly. If you pass the correctness tests, your
-code will be tested for performance; higher performance will lead to better
-scores.
+        // memory for node->key
+        key = malloc(sizeof(char) * MAXWORD);
+        strcpy(key, key_cpy);
 
+        // memory for node
+        newnode = malloc(sizeof(Node));
+        newnode->key = key;
+        newnode->value = atoi(val_cpy);
+        newnode->left = NULL;
+        newnode->right = NULL;
 
+        // Tabulate final results
+        BST_insert(&head, newnode, ascending_ord_str_compare);  
+  
+        free(key_cpy);
+        free(val_cpy);
+    }
+}
+```
 
+## Architecture of file.c
 
+The main optimization to point out here is the reading of the file in 4K chunks
+as opposed to invoking a I/O call for each `get_char()` call. This aligns with the
+4K sector size of modern disks.
+
+## Architecture of partition.c
+
+The synchronization problem presented by my framework is the classic producer-consumer
+problem, and it is solved using semaphores in `MR_Emit()` and `MR_Get()`. One section
+in `MR_Get()` is notable:
+
+```
+i = bb->use;
+if (strcmp(bb->buffer[i].key, POISON) == 0) {
+    //printf("reducer read poison pill\n");
+    sem_post(&bb->mutex);
+    return 1;
+};
+```
+
+If the entry retrieved from the buffer is a "poison pill", `MR_Get()` returns 1 to
+its parent `Reduce()`, thereby making Reduce() break out of its while-loop. This
+poison pill is inserted into all partitions when all producers are done with their
+work because we can guarantee at this point that no more valid (key,value) entries
+will be inserted in the partitions. The reducer threads terminates and are joined
+as soon as possible, which is the time optimal approach. The insertion of the
+poison entries occurs in `MR_Mapper_Cleanup()` as shown:
+
+```
+void MR_Mapper_Cleanup() {
+    // Thread that executes this section is guaranteed to be last thread.
+    // Last thread inserts a poison pill into each bounded buffer
+    int i;
+    for (int p_index = 0; p_index < num_p; p_index++) {
+        BoundedBuffer *bb = &p[p_index];
+        sem_wait(&bb->empty);
+        sem_wait(&bb->mutex);
+
+        i = bb->fill;
+        bb->buffer[i].key = POISON;
+        bb->fill = (i + 1) % BOUNDED_BUF_SIZE;
+
+        sem_post(&bb->mutex);
+        sem_post(&bb->full);
+    }
+}
+```
+
+## Results

@@ -159,17 +159,15 @@ void test_bst() {
 }
 
 void test_concurrent_bst() {
-    char *strings[] = {"texts/aca.txt", "texts/federalist.txt"};
+    char *strings[] = {"texts/aca.txt", "texts/birdman.txt"};
     MR_Run(2, strings, Map, 2, Reduce, 2, MR_DefaultHashPartition);
-    BST_print_inorder(head);
-
 }
 
 #ifdef UNIT_TEST
 int main(int argc, char *argv[]) {
-    test_get_char_returnval();
-    test_get_char();
-    test_get_word();
+    //test_get_char_returnval();
+    //test_get_char();
+    //test_get_word();
     //test_ascending_ord_str_compare();
     //test_bst();
     test_concurrent_bst();

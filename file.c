@@ -4,9 +4,6 @@
 #include <pthread.h>
 #include "file.h"
 
-#define BUF_SIZE 4096
-
-
 
 /*
 Returns the filesize of the given file. If error, returns -1.
